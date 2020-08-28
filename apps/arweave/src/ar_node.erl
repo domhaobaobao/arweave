@@ -13,6 +13,7 @@
 	get_current_diff/1, get_diff/1,
 	get_pending_txs/1, get_pending_txs/2, get_mined_txs/1, is_a_pending_tx/2,
 	get_current_block_hash/1,
+	get_block_index_entry/2,
 	is_joined/1,
 	get_block_txs_pairs/1,
 	mine/1, automine/1,
@@ -44,7 +45,10 @@ start(Peers, BI, MiningDelay, RewardAddr, AutoJoin, Diff, LastRetarget) ->
 			case {BI, AutoJoin} of
 				{not_joined, true} ->
 					ar_join:start(self(), Peers);
-				_ ->
+				{BI, true} ->
+					Self = self(),
+					spawn(fun() -> start_from_block_index(Self, BI) end);
+				{_, false} ->
 					do_nothing
 			end,
 			Gossip =
@@ -54,27 +58,6 @@ start(Peers, BI, MiningDelay, RewardAddr, AutoJoin, Diff, LastRetarget) ->
 						Peers
 					)
 				),
-			Height = ar_util:height_from_hashes(BI),
-			B =
-				case BI of
-					not_joined ->
-						#block{
-							reward_pool = 0,
-							weave_size = 0,
-							indep_hash = not_joined,
-							wallet_list = not_set,
-							diff = Diff,
-							last_retarget = LastRetarget
-						};
-					[{H, _, _} | _] ->
-						RecentBlockIndex = lists:sublist(BI, ?STORE_BLOCKS_BEHIND_CURRENT),
-						{ok, _} =
-							ar_wallets:start_link([
-								{recent_block_index, RecentBlockIndex},
-								{peers, Peers}
-							]),
-						ar_storage:read_block(H)
-				end,
 			%% Start processes, init state, and start server.
 			NPid = self(),
 			%% The message queue of this process may grow big under load.
@@ -92,29 +75,27 @@ start(Peers, BI, MiningDelay, RewardAddr, AutoJoin, Diff, LastRetarget) ->
 						ar:err([{event, failed_to_load_mempool}, {reason, Error}]),
 						{#{}, {0, 0}}
 				end,
-			{ok, _} = ar_data_sync_sup:start_link([{node, self()}]),
-			RecentBlocks = read_recent_blocks(BI),
 			State = #{
 				id => crypto:strong_rand_bytes(32),
 				node => NPid,
 				gossip => Gossip,
-				block_index => BI,
-				current => B#block.indep_hash,
-				wallet_list => B#block.wallet_list,
+				block_index => not_joined,
+				current => not_joined,
+				wallet_list => not_joined,
 				mining_delay => MiningDelay,
 				reward_addr => RewardAddr,
-				reward_pool => B#block.reward_pool,
-				height => Height,
+				reward_pool => -1,
+				height => -1,
 				trusted_peers => Peers,
-				diff => B#block.diff,
-				cumulative_diff => B#block.cumulative_diff,
+				diff => Diff,
+				cumulative_diff => -1,
 				tags => [],
 				miner => undefined,
 				automine => false,
-				last_retarget => B#block.last_retarget,
-				weave_size => B#block.weave_size,
-				block_txs_pairs => [block_txs_pair(RecentB) || RecentB <- RecentBlocks],
-				block_cache => initialize_block_cache(RecentBlocks),
+				last_retarget => LastRetarget,
+				weave_size => -1,
+				block_txs_pairs => not_joined,
+				block_cache => not_joined,
 				txs => TXs,
 				mempool_size => MempoolSize,
 				blocks_missing_txs => sets:new(),
@@ -126,6 +107,9 @@ start(Peers, BI, MiningDelay, RewardAddr, AutoJoin, Diff, LastRetarget) ->
 	),
 	ar_http_iface_server:reregister(http_entrypoint_node, PID),
 	PID.
+
+start_from_block_index(Node, BI) ->
+	Node ! {join, BI, read_recent_blocks(BI)}.
 
 %% @doc Stop a node server loop and its subprocesses.
 stop(Node) ->
@@ -188,8 +172,10 @@ get_block_index(Node) ->
 	Ref = make_ref(),
 	Node ! {get_blockindex, self(), Ref},
 	receive
-		{Ref, blockindex, not_joined} -> [];
-		{Ref, blockindex, BI} -> BI
+		{Ref, blockindex, not_joined} ->
+			[];
+		{Ref, blockindex, BI} ->
+			BI
 	end.
 
 %% @doc Return true if the given block hash is found in the block index.
@@ -207,6 +193,14 @@ get_current_block_hash(Node) ->
 	receive
 		{Ref, current_block_hash, not_joined} -> not_joined;
 		{Ref, current_block_hash, Current} -> Current
+	end.
+
+%% @doc Get the block index entry by height.
+get_block_index_entry(Node, Height) ->
+	Ref = make_ref(),
+	Node ! {get_block_index_entry, Height, self(), Ref},
+	receive
+		{Ref, block_index_entry, Entry} -> Entry
 	end.
 
 %% @doc Return the current height of the blockweave.
@@ -357,22 +351,7 @@ read_recent_blocks2([{BH, _, _} | BI]) ->
 	B = ar_storage:read_block(BH),
 	TXs = ar_storage:read_tx(B#block.txs),
 	SizeTaggedTXs = ar_block:generate_size_tagged_list_from_txs(TXs),
-	[B#block{ size_tagged_txs = SizeTaggedTXs } | read_recent_blocks2(BI)].
-
-block_txs_pair(#block{ indep_hash = H, size_tagged_txs = SizeTaggedTXs }) ->
-	{H, SizeTaggedTXs}.
-
-initialize_block_cache(Blocks) ->
-	initialize_block_cache(lists:reverse(Blocks), not_set).
-
-initialize_block_cache([B | Blocks], not_set) ->
-	initialize_block_cache(Blocks, ar_block_cache:new(B));
-initialize_block_cache([B | Blocks], BlockCache) ->
-	BH = B#block.indep_hash,
-	initialize_block_cache(Blocks,
-		ar_block_cache:mark_tip(ar_block_cache:add_validated(BlockCache, B), BH));
-initialize_block_cache([], BlockCache) ->
-	BlockCache.
+	[B#block{ size_tagged_txs = SizeTaggedTXs, txs = TXs } | read_recent_blocks2(BI)].
 
 %% @doc Main server loop.
 server(WPid, #{ txs := TXs, mempool_size := {MempoolHeaderSize, MempoolDataSize} } = State) ->
@@ -478,13 +457,10 @@ handle({work_complete, BaseBH, NewB, MinedTXs, BDS, POA, _HashesTried}, WPid, St
 
 handle({join, BI, Blocks}, WPid, State) ->
 	#{ trusted_peers := Peers } = State,
-	{ok, _} = ar_wallets:start_link([
-		{recent_block_index, lists:sublist(BI, ?STORE_BLOCKS_BEHIND_CURRENT)},
-		{peers, Peers}
-	]),
-	BlockTXPairs = [block_txs_pair(B) || B <- Blocks],
-	BlockCache = initialize_block_cache(Blocks),
-	gen_server:cast(WPid, {join, BI, BlockTXPairs, BlockCache}),
+	{ok, _} = ar_wallets:start_link([{blocks, Blocks}, {peers, Peers}]),
+	ar_header_sync:join(BI, Blocks),
+	ar_data_sync:join(BI),
+	gen_server:cast(WPid, {join, BI, Blocks}),
 	State;
 
 handle(mine, WPid, State) ->
@@ -520,6 +496,21 @@ handle({is_in_block_index, H, From, Ref}, _WPid, #{ block_index := BI } = State)
 
 handle({get_current_block_hash, From, Ref}, _WPid, #{ current := H } = State) ->
 	From ! {Ref, current_block_hash, H},
+	State;
+
+handle({get_block_index_entry, _H, From, Ref}, _WPid, #{ block_index := not_joined } = State) ->
+	From ! {Ref, block_index_entry, not_joined},
+	State;
+handle({get_block_index_entry, Height, From, Ref}, _WPid, State) ->
+	#{ height := CurrentHeight, block_index := BI } = State,
+	Reply =
+		case Height > CurrentHeight of
+			true ->
+				not_found;
+			false ->
+				lists:nth(CurrentHeight - Height + 1, BI)
+		end,
+	From ! {Ref, block_index_entry, Reply},
 	State;
 
 handle({get_height, From, Ref}, _WPid, #{ height := Height } = State) ->

@@ -191,6 +191,14 @@ handle(<<"GET">>, [<<"tx">>, Hash], Req, _Pid) ->
 	case get_tx_filename(Hash) of
 		{ok, Filename} ->
 			{200, #{}, sendfile(Filename), Req};
+		{migrated_v1, Filename} ->
+			case ar_storage:read_migrated_v1_tx_file(Filename) of
+				{ok, TX} ->
+					Body = ar_serialize:jsonify(ar_serialize:tx_to_json_struct(TX)),
+					{200, #{}, Body, Req};
+				_ ->
+					{404, #{}, <<>>, Req}
+			end;
 		{response, {Status, Headers, Body}} ->
 			{Status, Headers, Body, Req}
 	end;
@@ -245,6 +253,9 @@ handle(<<"GET">>, [<<"tx">>, Hash, << "data.", _/binary >>], Req, _Pid) ->
 			{404, #{}, sendfile("data/not_found.html"), Req};
 		{ok, Filename} ->
 			{ok, TX} = ar_storage:read_tx_file(Filename),
+			serve_tx_html_data(Req, TX);
+		{migrated_v1, Filename} ->
+			{ok, TX} = ar_storage:read_migrated_v1_tx_file(Filename),
 			serve_tx_html_data(Req, TX)
 	end;
 
@@ -792,7 +803,7 @@ handle(<<"GET">>, [<<"tx">>, Hash, Field], Req, _Pid) ->
 						false ->
 							{404, #{}, <<"Not Found.">>, Req}
 					end;
-				{ok, Filename} ->
+				{Status, Filename} ->
 					case Field of
 						<<"tags">> ->
 							{ok, TX} = ar_storage:read_tx_file(Filename),
@@ -810,7 +821,13 @@ handle(<<"GET">>, [<<"tx">>, Hash, Field], Req, _Pid) ->
 								)
 							), Req};
 						<<"data">> ->
-							{ok, TX} = ar_storage:read_tx_file(Filename),
+							{ok, TX} =
+								case Status of
+									ok ->
+										ar_storage:read_tx_file(Filename);
+									migrated_v1 ->
+										ar_storage:read_migrated_v1_tx_file(Filename)
+								end,
 							serve_tx_data(Req, TX);
 						_ ->
 							{ok, JSONBlock} = file:read_file(Filename),
@@ -874,7 +891,7 @@ not_joined(Req) ->
 
 handle_get_tx_status(Hash, Req) ->
 	case get_tx_filename(Hash) of
-		{ok, _} ->
+		{Source, _} when Source == ok orelse Source == migrated_v1 ->
 			case catch ar_arql_db:select_block_by_tx_id(Hash) of
 				{ok, #{
 					height := Height,
@@ -911,8 +928,8 @@ get_tx_filename(Hash) ->
 			{response, {400, #{}, <<"Invalid hash.">>}};
 		{error, ID, unavailable} ->
 			maybe_tx_is_pending_response(ID);
-		{ok, Filename} ->
-			{ok, Filename}
+		{Status, Filename} ->
+			{Status, Filename}
 	end.
 
 maybe_tx_is_pending_response(ID) ->
@@ -1256,8 +1273,10 @@ hash_to_filename(Type, Hash) ->
 			case F of
 				unavailable ->
 					{error, ID, unavailable};
-				Filename ->
-					{ok, Filename}
+				Filename when Type == block ->
+					{ok, Filename};
+				Response ->
+					Response
 			end
 	end.
 

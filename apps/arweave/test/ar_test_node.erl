@@ -23,7 +23,7 @@
 	test_with_mocked_functions/2,
 	get_tx_price/1,
 	post_and_mine/2,
-	mine_until_fork/3
+	read_block_when_stored/1
 ]).
 
 -include("src/ar.hrl").
@@ -61,8 +61,22 @@ stop() ->
 	ok = application:stop(arweave),
 	ok = ar:stop_dependencies(),
 	file:delete(filename:join(Config#config.data_dir, "mempool")),
+	file:delete(filename:join(Config#config.data_dir, "header_sync_state")),
 	file:delete(filename:join(Config#config.data_dir, "data_sync_state")),
-	rocksdb:destroy(filename:join([Config#config.data_dir, ?ROCKS_DB_DIR, "ar_data_sync_db"]), []),
+	DataSyncDB = filename:join([Config#config.data_dir, ?ROCKS_DB_DIR, "ar_data_sync_db"]),
+	case filelib:is_file(DataSyncDB) of
+		true ->
+			rocksdb:destroy(DataSyncDB, []);
+		false ->
+			ok
+	end,
+	HeaderSyncDB = filename:join([Config#config.data_dir, ?ROCKS_DB_DIR, "ar_header_sync_db"]),
+	case filelib:is_file(HeaderSyncDB) of
+		true ->
+			rocksdb:destroy(HeaderSyncDB, []);
+		false ->
+			ok
+	end,
 	Config.
 
 start(B0, RewardAddr) ->
@@ -402,7 +416,7 @@ get_tx_confirmations(slave, TXID) ->
 	case Response of
 		{ok, {{<<"200">>, _}, _, Reply, _, _}} ->
 			{Status} = ar_serialize:dejsonify(Reply),
-			lists:keyfind(<<"number_of_confirmations">>, 1, Status);
+			element(2, lists:keyfind(<<"number_of_confirmations">>, 1, Status));
 		{ok, {{<<"404">>, _}, _, _, _, _}} ->
 			-1
 	end;
@@ -529,13 +543,22 @@ post_and_mine(#{ miner := Miner, await_on := AwaitOn }, TXs) ->
 			BShadow#block{ txs = slave_call(ar_storage, read_tx, [BShadow#block.txs]) }
 	end.
 
-mine_until_fork(Master, Slave, CurrentHeight) ->
-	ar_node:mine(Master),
-	slave_mine(Slave),
-	[{MasterTip, _, _} | _ ] = wait_until_height(Master, CurrentHeight + 1),
-	case slave_wait_until_height(Slave, CurrentHeight + 1) of
-		[{MasterTip, _, _} | _] ->
-			CurrentHeight + 1;
+read_block_when_stored(H) ->
+	MaybeB = ar_util:do_until(
+		fun() ->
+			case ar_storage:read_block(H) of
+				unavailable ->
+					unavailable;
+				B ->
+					{ok, B}
+			end
+		end,
+		100,
+		5000
+	),
+	case MaybeB of
+		{ok, B} ->
+			B;
 		_ ->
-			mine_until_fork(Master, Slave, CurrentHeight + 1)
+			MaybeB
 	end.

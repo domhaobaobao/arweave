@@ -2,7 +2,7 @@
 -module(ar_block_cache).
 
 -export([
-	new/1,
+	new/1, from_list/1,
 	add/2, add_validated/2, mark_tip/2,
 	get/2, get_earliest_not_validated_from_longest_chain/1, get_block_and_status/2,
 	remove/2, prune/2
@@ -19,6 +19,13 @@
 %% and as a tip block.
 new(#block{ indep_hash = H, cumulative_diff = CDiff, height = Height } = B) ->
 	{#{ H => {B, on_chain, sets:new()} }, {CDiff, H}, gb_sets:from_list([{Height, H}]), H}.
+
+%% @doc Initialize a cache from the given list of validated blocks. Mark the latest
+%% block as the tip block. The given blocks must be sorted from newest to oldest.
+from_list([B]) ->
+	new(B);
+from_list([#block{ indep_hash = H } = B | Blocks]) ->
+	mark_tip(add_validated(from_list(Blocks), B), H).
 
 %% @doc Add a block shadow to the cache. The block is marked as not validated yet.
 %% If the block already exists in the cache, it is overwritten, its status does not change.
