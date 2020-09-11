@@ -4,9 +4,9 @@
 
 -export([
 	generate/1,
-	validate/4, validate/3,
+	validate/4, validate/3, validate2/4,
 	modify_diff/2,
-	get_spoa/3
+	get_poa_from_v2_index/1
 ]).
 
 -include("ar.hrl").
@@ -72,10 +72,10 @@ generate(Seed, WeaveSize, BI, Option, Limit) ->
 	end.
 
 get_spoa(RecallByte, BI, Option) ->
-	case ar_data_sync:get_chunk(RecallByte + 1) of
-		{ok, #{ tx_root := _TXRoot, chunk := Chunk, tx_path := TXPath, data_path := DataPath }} ->
-			#poa{ option = Option, chunk = Chunk, tx_path = TXPath, data_path = DataPath };
-		_ ->
+	case get_poa_from_v2_index(RecallByte) of
+		#poa{} = PoA ->
+			PoA#poa{ option = Option };
+		not_found ->
 			{TXRoot, BlockBase, _BlockTop, RecallBH} = find_challenge_block(RecallByte, BI),
 			case ar_storage:read_block(RecallBH) of
 				unavailable ->
@@ -112,6 +112,14 @@ get_spoa(RecallByte, BI, Option) ->
 							end
 					end
 			end
+	end.
+
+get_poa_from_v2_index(RecallByte) ->
+	case ar_data_sync:get_chunk(RecallByte + 1) of
+		{ok, #{ tx_root := _TXRoot, chunk := Chunk, tx_path := TXPath, data_path := DataPath }} ->
+			#poa{ option = 1, chunk = Chunk, tx_path = TXPath, data_path = DataPath };
+		_ ->
+			not_found
 	end.
 
 construct_spoa(B, TXs, BlockOffset, TXRoot, Option) ->
@@ -246,7 +254,7 @@ validate(LastIndepHash, WeaveSize, BI, POA) ->
 
 validate(RecallByte, BI, POA) ->
 	{TXRoot, BlockBase, BlockTop, _BH} = find_challenge_block(RecallByte, BI),
-	validate_tx_path(RecallByte - BlockBase, TXRoot, BlockTop - BlockBase, POA).
+	validate2(RecallByte - BlockBase, TXRoot, BlockTop - BlockBase, POA).
 
 calculate_challenge_byte(_, 0, _) -> 0;
 calculate_challenge_byte(LastIndepHash, WeaveSize, Option) ->
@@ -270,7 +278,7 @@ find_byte_in_size_tagged_list(Byte, [_ | Rest]) ->
 find_byte_in_size_tagged_list(_Byte, []) ->
 	{error, not_found}.
 
-validate_tx_path(BlockOffset, TXRoot, BlockEndOffset, POA) ->
+validate2(BlockOffset, TXRoot, BlockEndOffset, POA) ->
 	Validation =
 		ar_merkle:validate_path(
 			TXRoot,
