@@ -84,7 +84,7 @@ set_current(PrevRootHash, RootHash, RewardAddr, Height) when is_binary(RootHash)
 
 init([{recent_block_index, []}, {peers, _Peers}]) ->
 	process_flag(trap_exit, true),
-	DAG = ar_diff_dag:new(<<>>, ar_patricia_tree:new(), {0, not_set}),
+	DAG = ar_diff_dag:new(<<>>, ar_patricia_tree:new(), not_set),
 	{ok, DAG};
 init([{recent_block_index, RecentBlockIndex}, {peers, Peers}]) ->
 	{LastDAG, LastB, PrevWalletList} = lists:foldl(
@@ -94,7 +94,7 @@ init([{recent_block_index, RecentBlockIndex}, {peers, Peers}]) ->
 				{RootHash, UpdatedTree} =
 					ar_block:hash_wallet_list(B#block.height, B#block.reward_addr, Tree),
 				RootHash = B#block.wallet_list,
-				DAG = ar_diff_dag:new(RootHash, UpdatedTree, {B#block.height, not_set}),
+				DAG = ar_diff_dag:new(RootHash, UpdatedTree, not_set),
 				{DAG, B, <<>>};
 			({BH, _, _}, {DAG, PreviousB, _}) ->
 				BShadow = ar_storage:read_block(BH),
@@ -170,20 +170,19 @@ handle_call({add_wallets, RootHash, Wallets, RewardAddr, Height}, _From, DAG) ->
 	Tree = ar_diff_dag:reconstruct(DAG, RootHash, fun apply_diff/2),
 	{UpdatedRootHash, NoRewardWalletHash} =
 		compute_hash(Tree, Wallets, not_set, Height, RewardAddr),
-	Metadata = {Height, NoRewardWalletHash},
-	UpdatedDAG = maybe_add_node(DAG, UpdatedRootHash, RootHash, Wallets, Metadata),
+	UpdatedDAG = maybe_add_node(DAG, UpdatedRootHash, RootHash, Wallets, NoRewardWalletHash),
 	{reply, {ok, UpdatedRootHash}, UpdatedDAG};
 
 handle_call({update_wallets, RootHash, Wallets, RewardAddr, Height}, _From, DAG) ->
 	Tree = ar_diff_dag:reconstruct(DAG, RootHash, fun apply_diff/2),
-	{_, NoRewardWalletHash} = ar_diff_dag:get_metadata(DAG, RootHash),
+	NoRewardWalletHash = ar_diff_dag:get_metadata(DAG, RootHash),
 	{UpdatedRootHash, UpdatedNoRewardWalletHash} =
 		compute_hash(Tree, Wallets, NoRewardWalletHash, Height, RewardAddr),
 	case UpdatedRootHash of
 		RootHash ->
 			{reply, {ok, RootHash}, DAG};
 		_ ->
-			Meta = {Height, UpdatedNoRewardWalletHash},
+			Meta = UpdatedNoRewardWalletHash,
 			UpdatedDAG =
 				case ar_diff_dag:is_sink(DAG, RootHash) of
 					true ->
@@ -263,9 +262,8 @@ apply_block(DAG, NewB, RootHash, RewardPool, Height) ->
 				ar_block:hash_wallet_list(Height + 1, RewardAddr, UpdatedTree),
 			case NewB#block.wallet_list of
 				UpdatedRootHash ->
-					Meta = {Height + 1, not_set},
 					UpdatedDAG =
-						maybe_add_node(DAG, UpdatedRootHash, RootHash, UpdatedWallets, Meta),
+						maybe_add_node(DAG, UpdatedRootHash, RootHash, UpdatedWallets, not_set),
 					{ok, UpdatedDAG};
 				_ ->
 					{{error, invalid_wallet_list}, DAG}
@@ -300,12 +298,7 @@ set_current(DAG, PrevRootHash, RootHash, RewardAddr, Height) ->
 			ok = ar_storage:write_wallet_list(RootHash, RewardAddr, IsRewardAddrNew, Tree)
 	end,
 	prometheus_gauge:set(wallet_list_size, ar_patricia_tree:size(Tree)),
-	ar_diff_dag:filter(
-		UpdatedDAG,
-		fun({NodeHeight, _}) ->
-			NodeHeight >= Height - ?STORE_BLOCKS_BEHIND_CURRENT
-		end
-	).
+	ar_diff_dag:filter(UpdatedDAG, ?STORE_BLOCKS_BEHIND_CURRENT).
 
 apply_diff(Diff, Tree) ->
 	maps:fold(
