@@ -559,9 +559,11 @@ process_solution(S, Hash, Nonce, MinedTXs, Diff, Timestamp) ->
 
 log_performance(TotalHashesTried, StartedAt) ->
 	Time = timer:now_diff(erlang:timestamp(), StartedAt),
+	Rate = TotalHashesTried / (Time / 1000000),
+	prometheus_histogram:observe(mining_rate, Rate),
 	ar:info([
 		{event, stopped_mining},
-		{miner_hashes_per_second, TotalHashesTried / (Time / 1000000)}
+		{miner_hashes_per_second, Rate}
 	]).
 
 process_spora_solution(S, Hash, Nonce, SPoA, MinedTXs, Diff, Timestamp) ->
@@ -588,9 +590,11 @@ process_spora_solution(S, Hash, Nonce, SPoA, MinedTXs, Diff, Timestamp) ->
 
 log_spora_performance(TotalSPoRAsTried, StartedAt) ->
 	Time = timer:now_diff(erlang:timestamp(), StartedAt),
+	Rate = TotalSPoRAsTried / (Time / 1000000),
+	prometheus_histogram:observe(mining_rate, Rate),
 	ar:info([
 		{event, stopped_mining},
-		{miner_sporas_per_second, TotalSPoRAsTried / (Time / 1000000)}
+		{miner_sporas_per_second, Rate}
 	]).
 
 %% @doc Start the workers and return the new state.
