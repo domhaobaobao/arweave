@@ -239,8 +239,8 @@ apply_next_block(State, B) ->
 									{block_hash, ar_util:encode(NextB#block.indep_hash)}
 								]
 							);
-						ok ->
-							apply_next_block(State, NextB, B)
+						{ok, RootHash} ->
+							apply_next_block(State, NextB#block{ wallet_list = RootHash }, B)
 					end
 			end
 	end.

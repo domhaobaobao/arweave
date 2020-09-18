@@ -103,7 +103,9 @@ init([{recent_block_index, RecentBlockIndex}, {peers, Peers}]) ->
 				RewardPool = PreviousB#block.reward_pool,
 				Height = PreviousB#block.height,
 				RootHash = PreviousB#block.wallet_list,
-				{ok, UpdatedDAG} = apply_block(DAG, B, RootHash, RewardPool, Height),
+				ExpectedRootHash = B#block.wallet_list,
+				{{ok, ExpectedRootHash}, UpdatedDAG} =
+					apply_block(DAG, B, RootHash, RewardPool, Height),
 				{UpdatedDAG, B, PreviousB#block.wallet_list}
 		end,
 		start,
@@ -260,12 +262,13 @@ apply_block(DAG, NewB, RootHash, RewardPool, Height) ->
 			UpdatedTree = apply_diff(UpdatedWallets, Tree),
 			{UpdatedRootHash, _} =
 				ar_block:hash_wallet_list(Height + 1, RewardAddr, UpdatedTree),
-			case NewB#block.wallet_list of
-				UpdatedRootHash ->
+			case NewB#block.wallet_list == UpdatedRootHash
+						orelse NewB#block.height < ar_fork:height_2_2() of
+				true ->
 					UpdatedDAG =
 						maybe_add_node(DAG, UpdatedRootHash, RootHash, UpdatedWallets, not_set),
-					{ok, UpdatedDAG};
-				_ ->
+					{{ok, UpdatedRootHash}, UpdatedDAG};
+				false ->
 					{{error, invalid_wallet_list}, DAG}
 			end;
 		_ ->

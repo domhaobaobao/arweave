@@ -527,8 +527,8 @@ generate_block_from_shadow(State, BShadow, TXs) ->
 				{validation_error, invalid_wallet_list}
 			]),
 			error;
-		ok ->
-			{ok, B}
+		{ok, RootHash} ->
+			{ok, B#block{ wallet_list = RootHash }}
 	end.
 
 pick_txs(TXIDs, TXs) ->
