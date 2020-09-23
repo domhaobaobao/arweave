@@ -38,6 +38,9 @@
 	total_hashes_tried = 0, % the number of tried hashes, used to estimate the hashrate
 	started_at = not_set, % the timestamp when the mining begins, used to estimate the hashrate
 	total_sporas_tried = 0, % the number of Succinct Proofs of Random Access checked during mining
+	%% The number of Succinct Proofs of Random Access discovered but not neccessarily
+	%% checked (because they are not present locally) during mining.
+	total_sporas_discovered = 0,
 	block_index = not_set % the latest block index
 }).
 
@@ -468,7 +471,8 @@ server(
 		started_at = StartedAt,
 		txs = MinedTXs,
 		candidate_block = #block { diff = Diff, timestamp = Timestamp },
-		total_sporas_tried = TotalSPoRAsTried
+		total_sporas_tried = TotalSPoRAsTried,
+		total_sporas_discovered = TotalSPoRAsDiscovered
 	}
 ) ->
 	receive
@@ -477,7 +481,7 @@ server(
 			stop_miners(Miners),
 			case Height + 1 >= ar_fork:height_2_3() of
 				true ->
-					log_spora_performance(TotalSPoRAsTried, StartedAt);
+					log_spora_performance(TotalSPoRAsTried, TotalSPoRAsDiscovered, StartedAt);
 				false ->
 					log_performance(TotalHashesTried, StartedAt)
 			end;
@@ -501,7 +505,18 @@ server(
 			%% A stale solution.
 			server(S);
 		{sporas_tried, SPoRAsTried} ->
-			server(S#state { total_sporas_tried = TotalSPoRAsTried + SPoRAsTried });
+			server(
+				S#state{
+					total_sporas_tried = TotalSPoRAsTried + SPoRAsTried,
+					total_sporas_discovered = TotalSPoRAsDiscovered + SPoRAsTried
+				}
+			);
+		{sporas_discovered, SPoRAsDiscovered} ->
+			server(
+				S#state{
+					total_sporas_discovered = TotalSPoRAsDiscovered + SPoRAsDiscovered
+				}
+			);
 		{spora_solution, Hash, Nonce, SPoA, Timestamp} ->
 			Wallets = ar_wallets:get(RootHash, ar_tx:get_addresses(MinedTXs)),
 			case filter_by_valid_tx_fee(MinedTXs, Diff, Height, Wallets, Timestamp) of
@@ -572,6 +587,7 @@ process_spora_solution(S, Hash, Nonce, SPoA, MinedTXs, Diff, Timestamp) ->
 		miners = Miners,
 		current_block = #block{ indep_hash = CurrentBH },
 		total_sporas_tried = TotalSPoRAsTried,
+		total_sporas_discovered = TotalSPoRAsDiscovered,
 		started_at = StartedAt,
 		data_segment = BDS,
 		bds_base = BDSBase,
@@ -585,16 +601,18 @@ process_spora_solution(S, Hash, Nonce, SPoA, MinedTXs, Diff, Timestamp) ->
 	IndepHash = ar_weave:indep_hash_post_fork_2_3(BDS, Hash, Nonce, SPoA),
 	NewB = NewBBeforeHash#block{ indep_hash = IndepHash },
 	Parent ! {work_complete, CurrentBH, NewB, MinedTXs, BDSBase, SPoA, TotalSPoRAsTried},
-	log_spora_performance(TotalSPoRAsTried, StartedAt),
+	log_spora_performance(TotalSPoRAsTried, TotalSPoRAsDiscovered, StartedAt),
 	stop_miners(Miners).
 
-log_spora_performance(TotalSPoRAsTried, StartedAt) ->
+log_spora_performance(TotalSPoRAsTried, TotalSPoRAsDiscovered, StartedAt) ->
 	Time = timer:now_diff(erlang:timestamp(), StartedAt),
 	Rate = TotalSPoRAsTried / (Time / 1000000),
 	prometheus_histogram:observe(mining_rate, Rate),
+	DiscoverRate = TotalSPoRAsDiscovered / (Time / 1000000),
 	ar:info([
 		{event, stopped_mining},
-		{miner_sporas_per_second, Rate}
+		{miner_sporas_per_second, Rate},
+		{miner_discovered_sporas_per_second, DiscoverRate}
 	]).
 
 %% @doc Start the workers and return the new state.
@@ -736,6 +754,7 @@ mine_spora(
 				end,
 			case SPoA of
 				not_found ->
+					Supervisor ! {sporas_discovered, 1},
 					mine_spora(WorkerState, Supervisor);
 				_ ->
 					UpdatedStats = update_mining_stats(Stats, FetchTime, SPoA),
