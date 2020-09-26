@@ -42,12 +42,12 @@ pick_random(Xs) ->
 
 %% @doc Encode a binary to URL safe base64.
 encode(Bin) ->
-	b64fast:encode(Bin).
+	base64:encode(Bin).
 
 %% @doc Try to decode a URL safe base64 into a binary or throw an error when
 %% invalid.
 decode(Input) ->
-	b64fast:decode(Input).
+	base64:decode(Input).
 
 %% @doc Safely decode a URL safe base64 into a binary returning an ok or error
 %% tuple.
